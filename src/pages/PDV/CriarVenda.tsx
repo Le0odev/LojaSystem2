@@ -3,7 +3,7 @@
 import type React from "react"
 import { useState, useEffect, useCallback } from "react"
 import axios, { type AxiosError } from "axios"
-import { FaPlus, FaMinus } from "react-icons/fa"
+import { FaPlus, FaMinus, FaSave, FaList } from "react-icons/fa"
 import { useAuth } from "../Login/authContext"
 import {
   VendaContainer,
@@ -50,6 +50,7 @@ import { SearchBar, SearchContainer, SearchIcon } from "../../components/StyledS
 import { FiSearch } from "react-icons/fi"
 import PixModalVenda from "./PixModalVenda"
 import { CancelButton } from "../ProductCad/StyledProdutos"
+import { DragDropContext, Droppable, Draggable, type DropResult, type DroppableProvided, type DraggableProvided } from "react-beautiful-dnd"
 
 interface Produto {
   id: number
@@ -67,22 +68,49 @@ interface ErrorResponse {
   message: string
 }
 
+interface PaymentMethod {
+  method: string
+  amount: number
+  id: string
+}
+
+interface SavedTransaction {
+  id: string
+  carrinho: Produto[]
+  desconto: number
+  timestamp: number
+  customerName?: string
+}
+
+interface PixModalVendaProps {
+  isOpen: boolean
+  onClose: () => void
+  onCancel: () => void
+  subtotal: number
+  fullPIX: string
+  now: number
+}
+
 const CriarVenda: React.FC = () => {
   const { token } = useAuth()
   const [searchTermByName, setSearchTermByName] = useState<string>("")
   const [produtos, setProdutos] = useState<Produto[]>([])
   const [carrinho, setCarrinho] = useState<Produto[]>([])
   const [autoAddFeedback, setAutoAddFeedback] = useState<string>("")
-  const [codigoBarras, setCodigoBarras] = useState<string>("")
   const [desconto, setDesconto] = useState<number>(0)
   const [formaDePagamento, setFormaDePagamento] = useState<string>("")
   const [showModal, setShowModal] = useState<boolean>(false)
-  const [showPrintModal, setShowPrintModal] = useState<boolean>(false)
   const [showPixModal, setShowPixModal] = useState(false)
-  const [searchTermByCodeBar, setSearchTermByCodeBar] = useState<string>("")
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([])
+  const [showSplitPaymentModal, setShowSplitPaymentModal] = useState<boolean>(false)
+  const [currentPaymentMethod, setCurrentPaymentMethod] = useState<string>("Cartão")
+  const [currentPaymentAmount, setCurrentPaymentAmount] = useState<string>("")
+  const [savedTransactions, setSavedTransactions] = useState<SavedTransaction[]>([])
+  const [showSavedTransactionsModal, setShowSavedTransactionsModal] = useState<boolean>(false)
+  const [customerName, setCustomerName] = useState<string>("")
+  const [showSaveTransactionModal, setShowSaveTransactionModal] = useState<boolean>(false)
 
   const toggleModal = () => setShowModal(!showModal)
-  const togglePrintModal = () => setShowPrintModal(!showPrintModal)
 
   const removeLeadingZeros = (code: string): string => {
     return code.replace(/^0+/, "")
@@ -91,40 +119,8 @@ const CriarVenda: React.FC = () => {
   const searchProdutosByCodeBar = async (codeBar: string) => {
     try {
       if (codeBar.startsWith("20") && codeBar.length === 13) {
-        // Handling bulk product (a granel)
         const productCode = removeLeadingZeros(codeBar.substring(2, 7))
         const weightInGrams = Number.parseInt(codeBar.substring(7, 12))
-
-        // Buscar o produto no banco de dados
-        const response = await axios.get(
-          `https://systemallback-end-production.up.railway.app/products/search/codebar?codeBar=${productCode}`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          },
-        )
-
-        const produtoEncontrado = response.data[0] // Supondo que a API retorne um array de resultados
-
-        if (produtoEncontrado) {
-          // Produto encontrado, com peso
-          const produtoComPeso = {
-            ...produtoEncontrado,
-            peso: weightInGrams, // Peso do produto a granel em gramas
-            bulk: true, // Marcar como produto a granel
-          }
-          addToCart(produtoComPeso) // Adicionar ao carrinho
-          setAutoAddFeedback(
-            `Produto "${produtoEncontrado.productName}" (${weightInGrams}g) adicionado automaticamente.`,
-          )
-          setSearchTermByName("") // Limpar o input após sucesso
-        } else {
-          setAutoAddFeedback("Produto a granel não encontrado.")
-        }
-      } else {
-        // Lógica para produtos não a granel (por unidade)
-        const productCode = removeLeadingZeros(codeBar)
 
         const response = await axios.get(
           `https://systemallback-end-production.up.railway.app/products/search/codebar?codeBar=${productCode}`,
@@ -136,17 +132,38 @@ const CriarVenda: React.FC = () => {
         )
 
         const produtoEncontrado = response.data[0]
+        if (produtoEncontrado) {
+          const produtoComPeso = {
+            ...produtoEncontrado,
+            peso: weightInGrams,
+            bulk: true,
+          }
+          addToCart(produtoComPeso)
+          setAutoAddFeedback(`Produto "${produtoEncontrado.productName}" (${weightInGrams}g) adicionado automaticamente.`)
+          setSearchTermByName("")
+        } else {
+          setAutoAddFeedback("Produto a granel não encontrado.")
+        }
+      } else {
+        const productCode = removeLeadingZeros(codeBar)
+        const response = await axios.get(
+          `https://systemallback-end-production.up.railway.app/products/search/codebar?codeBar=${productCode}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+        )
 
+        const produtoEncontrado = response.data[0]
         if (produtoEncontrado) {
           addToCart(produtoEncontrado)
           setAutoAddFeedback(`Produto "${produtoEncontrado.productName}" adicionado automaticamente.`)
-          setSearchTermByName("") // Limpar o input após sucesso
+          setSearchTermByName("")
         } else {
           setAutoAddFeedback("Produto não encontrado.")
         }
       }
-
-      // Resetar o campo de busca
       setTimeout(() => setAutoAddFeedback(""), 3000)
     } catch (error) {
       console.error("Erro ao buscar produtos por código de barras:", error)
@@ -165,7 +182,6 @@ const CriarVenda: React.FC = () => {
             },
           },
         )
-
         setProdutos(response.data)
       } catch (error) {
         console.error("Erro ao buscar produtos:", error)
@@ -177,7 +193,6 @@ const CriarVenda: React.FC = () => {
 
   const addToCart = (produto: Produto) => {
     const itemExistente = carrinho.find((item) => item.id === produto.id)
-
     if (itemExistente) {
       const novoCarrinho = carrinho.map((item) =>
         item.id === produto.id
@@ -199,98 +214,126 @@ const CriarVenda: React.FC = () => {
         ...carrinho,
       ])
     }
-
-    setCodigoBarras("")
   }
 
   const updateQuantity = (id: number, quantidade: number | null) => {
     setCarrinho((prevCarrinho) =>
       prevCarrinho
-        .map((item) => (item.id === id ? { ...item, quantidade: quantidade } : item))
-        .filter((item) => item.quantidade !== undefined && item.quantidade !== null && item.quantidade > 0),
+        .map((item) => (item.id === id ? { ...item, quantidade } : item))
+        .filter((item) => item.quantidade !== null && item.quantidade > 0),
     )
   }
 
   const updateWeight = (id: number, peso: number | null) => {
-    setCarrinho((prevCarrinho) => prevCarrinho.map((item) => (item.id === id ? { ...item, peso: peso } : item)))
+    setCarrinho((prevCarrinho) => prevCarrinho.map((item) => (item.id === id ? { ...item, peso } : item)))
   }
 
   const removeFromCart = (id: number) => {
     setCarrinho((prevCarrinho) => prevCarrinho.filter((item) => item.id !== id))
   }
 
-  const handlePixConfirmation = async () => {
-    try {
-      await handleCheckout()
-      setShowPixModal(false)
-    } catch (error) {
-      console.error("Erro ao processar pagamento PIX:", error)
-      toast.error("Erro ao processar o pagamento. Por favor, tente novamente.")
-    }
-  }
-
   const handleCheckout = async () => {
     try {
-      if (!formaDePagamento) {
+      if (paymentMethods.length > 0) {
+        const totalPaymentAmount = paymentMethods.reduce((sum, method) => sum + method.amount, 0)
+        const { subtotalComDesconto } = calcularSubtotal()
+        if (Math.abs(totalPaymentAmount - subtotalComDesconto) > 0.01) {
+          toast.warning(
+            `O valor total dos pagamentos (R$${totalPaymentAmount.toFixed(2)}) não corresponde ao valor da venda (R$${subtotalComDesconto.toFixed(2)}).`,
+          )
+          return
+        }
+
+        const vendaItems = carrinho.map((item) => ({
+          productId: item.id,
+          quantity: item.bulk ? null : item.quantidade,
+          weight: item.bulk ? item.peso : null,
+          isBulk: item.bulk,
+        }))
+
+        const paymentMethodsForAPI = paymentMethods.map((method) => ({
+          method: method.method,
+          amount: method.amount,
+        }))
+
+        const saleRequest = {
+          itemsSale: vendaItems,
+          discount: desconto,
+          paymentMethods: paymentMethodsForAPI,
+        }
+
+        await axios.post(
+          "https://systemallback-end-production.up.railway.app/sales/create",
+          saleRequest,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          },
+        )
+
+        resetSaleState()
+        toast.success("Venda finalizada com sucesso.")
+        handlePrintReceipt()
+      } else if (!formaDePagamento) {
         toast.warning("Por favor, preencha a forma de pagamento antes de finalizar a venda.")
         return
-      }
-
-      if (formaDePagamento === "PIX" && !showPixModal) {
+      } else if (formaDePagamento === "PIX" && !showPixModal) {
         setShowPixModal(true)
         return
-      }
+      } else {
+        const vendaItems = carrinho.map((item) => ({
+          productId: item.id,
+          quantity: item.bulk ? null : item.quantidade,
+          weight: item.bulk ? item.peso : null,
+          isBulk: item.bulk,
+        }))
 
-      const vendaItems = carrinho.map((item) => ({
-        productId: item.id,
-        quantity: item.bulk ? null : item.quantidade,
-        weight: item.bulk ? item.peso : null,
-        isBulk: item.bulk,
-      }))
+        const saleRequest = {
+          itemsSale: vendaItems,
+          discount: desconto,
+          methodPayment: formaDePagamento,
+        }
 
-      const saleRequest = {
-        itemsSale: vendaItems,
-        discount: desconto,
-        methodPayment: formaDePagamento,
-      }
-
-      const response = await axios.post(
-        "https://systemallback-end-production.up.railway.app/sales/create",
-        saleRequest,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
+        await axios.post(
+          "https://systemallback-end-production.up.railway.app/sales/create",
+          saleRequest,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
           },
-        },
-      )
+        )
 
-      setCarrinho([])
-      setShowPrintModal(true)
-      toggleModal()
-      setAutoAddFeedback("")
-      setSearchTermByName("")
-      setDesconto(0)
-      toast.success("Venda finalizada com sucesso.")
-
-      handlePrintReceipt()
+        resetSaleState()
+        toast.success("Venda finalizada com sucesso.")
+        handlePrintReceipt()
+      }
     } catch (error) {
       console.error("Erro ao realizar checkout:", error)
-
       if (axios.isAxiosError(error)) {
         const axiosError = error as AxiosError<ErrorResponse>
-
         let errorMessage = "Erro ao finalizar a venda. Por favor, tente novamente mais tarde."
-
         if (axiosError.response?.data?.message) {
           errorMessage = axiosError.response.data.message
         }
-
         toast.error(errorMessage)
       } else {
         toast.error("Erro desconhecido ao finalizar a venda. Por favor, tente novamente mais tarde.")
       }
     }
+  }
+
+  const resetSaleState = () => {
+    setCarrinho([])
+    toggleModal()
+    setAutoAddFeedback("")
+    setSearchTermByName("")
+    setDesconto(0)
+    setPaymentMethods([])
+    setFormaDePagamento("")
   }
 
   useEffect(() => {
@@ -301,7 +344,6 @@ const CriarVenda: React.FC = () => {
 
   const calcularSubtotal = () => {
     let subtotal = 0
-
     carrinho.forEach((item) => {
       if (item.bulk) {
         subtotal += (item.productPrice * (item.peso || 0)) / 1000
@@ -309,10 +351,8 @@ const CriarVenda: React.FC = () => {
         subtotal += item.productPrice * (item.quantidade || 0)
       }
     })
-
     const descontoPercentual = desconto || 0
     const subtotalComDesconto = subtotal - subtotal * (descontoPercentual / 100)
-
     return { subtotal, subtotalComDesconto }
   }
 
@@ -321,16 +361,10 @@ const CriarVenda: React.FC = () => {
     searchProdutosByName(searchTermByName)
   }
 
-  const handleSearchByCodeBarSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    searchProdutosByCodeBar(searchTermByCodeBar)
-  }
-
-  // Modifique a função handlePrintReceipt para aceitar dados opcionais
   const handlePrintReceipt = () => {
     const carrinhoParaImprimir = carrinho
     const descontoParaImprimir = desconto
-    const formaDePagamentoParaImprimir = formaDePagamento
+    const formaDePagamentoParaImprimir = paymentMethods.length > 0 ? "Pagamento Dividido" : formaDePagamento
 
     const pageWidth = 80
     const pageHeight = 297
@@ -353,7 +387,6 @@ const CriarVenda: React.FC = () => {
     const writeText = (text: string, fontSize = 10, isBold = false) => {
       doc.setFontSize(fontSize)
       doc.setFont("helvetica", isBold ? "bold" : "normal")
-
       const textLines = doc.splitTextToSize(text, pageWidth - margins.left - margins.right)
       textLines.forEach((line: string) => {
         if (currentY + lineHeight > pageHeight - margins.bottom) {
@@ -372,7 +405,6 @@ const CriarVenda: React.FC = () => {
       currentY += lineHeight
     }
 
-    // Header
     writeText("Cupom de Compra", 14, true)
     writeText("Empório Verde Grãos")
     writeText("CNPJ: 34.483.095/0001-63")
@@ -381,7 +413,6 @@ const CriarVenda: React.FC = () => {
     writeText(`Data e Hora: ${new Date().toLocaleString("pt-BR")}`)
     drawLine()
 
-    // Items
     carrinhoParaImprimir.forEach((item) => {
       writeText(item.productName, 12, true)
       writeText(`Preço: R$ ${item.productPrice.toFixed(2)}`)
@@ -396,7 +427,6 @@ const CriarVenda: React.FC = () => {
       drawLine()
     })
 
-    // Totals
     const calcularSubtotalTeste = (carrinhoTeste: Produto[], descontoTeste: number) => {
       const subtotal = carrinhoTeste.reduce((total, item) => {
         if (item.bulk) {
@@ -405,7 +435,6 @@ const CriarVenda: React.FC = () => {
           return total + item.productPrice * (item.quantidade || 0)
         }
       }, 0)
-
       const subtotalComDesconto = subtotal - subtotal * (descontoTeste / 100)
       return { subtotal, subtotalComDesconto }
     }
@@ -415,7 +444,15 @@ const CriarVenda: React.FC = () => {
     writeText(`Subtotal: R$ ${subtotal.toFixed(2)}`, 12)
     writeText(`Desconto: R$ ${(subtotal - subtotalComDesconto).toFixed(2)}`, 12)
     writeText(`Total: R$ ${subtotalComDesconto.toFixed(2)}`, 12, true)
-    writeText(`Pagamento: ${formaDePagamentoParaImprimir}`, 12)
+
+    if (paymentMethods.length > 0) {
+      writeText("Formas de Pagamento:", 12, true)
+      paymentMethods.forEach((method) => {
+        writeText(`${method.method}: R$ ${method.amount.toFixed(2)}`, 10)
+      })
+    } else {
+      writeText(`Pagamento: ${formaDePagamentoParaImprimir}`, 12)
+    }
 
     drawLine()
     writeText("Obrigado pela preferência!", 10, true)
@@ -426,16 +463,11 @@ const CriarVenda: React.FC = () => {
 
   const printPDF = (pdfBlob: Blob) => {
     const pdfUrl = URL.createObjectURL(pdfBlob)
-
     const printWindow = window.open(pdfUrl)
-
     if (!printWindow) {
-      alert(
-        "Não foi possível abrir a janela de impressão. Verifique se as configurações do navegador permitem abrir novas janelas.",
-      )
+      alert("Não foi possível abrir a janela de impressão. Verifique as configurações do navegador.")
       return
     }
-
     printWindow.onload = () => {
       setTimeout(() => {
         printWindow.print()
@@ -457,48 +489,138 @@ const CriarVenda: React.FC = () => {
           searchProdutosByName(searchTermByName)
         }
       }, 300)
-
       return () => clearTimeout(debounceSearch)
     } else {
       setProdutos([])
     }
-  }, [searchTermByName, searchProdutosByName, searchProdutosByCodeBar])
+  }, [searchTermByName, searchProdutosByName])
 
   const { subtotal, subtotalComDesconto } = calcularSubtotal()
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // F2 - Focus search
       if (e.key === "F2") {
         const searchInput = document.querySelector('input[type="text"]') as HTMLInputElement
-        if (searchInput) {
-          searchInput.focus()
-        }
+        if (searchInput) searchInput.focus()
       }
-      // F4 - Finish sale
-      if (e.key === "F4") {
-        if (carrinho.length > 0) {
-          setShowModal(true)
-        }
+      if (e.key === "F4" && carrinho.length > 0) {
+        setShowModal(true)
       }
-      // F8 - Quick payment with PIX
-      if (e.key === "F8") {
-        if (carrinho.length > 0) {
-          setFormaDePagamento("PIX")
-          setShowPixModal(true)
-        }
+      if (e.key === "F8" && carrinho.length > 0) {
+        setFormaDePagamento("PIX")
+        setShowPixModal(true)
+      }
+      if (e.key === "F6" && carrinho.length > 0) {
+        setShowSaveTransactionModal(true)
+      }
+      if (e.key === "F7") {
+        setShowSavedTransactionsModal(true)
       }
     }
-
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [carrinho.length])
+
+  useEffect(() => {
+    const savedTransactionsData = localStorage.getItem("savedTransactions")
+    if (savedTransactionsData) {
+      try {
+        const parsedData = JSON.parse(savedTransactionsData)
+        setSavedTransactions(parsedData)
+      } catch (error) {
+        console.error("Error parsing saved transactions:", error)
+      }
+    }
+  }, [])
+
+  const addPaymentMethod = () => {
+    if (!currentPaymentMethod) {
+      toast.warning("Selecione um método de pagamento.")
+      return
+    }
+    const amount = Number.parseFloat(currentPaymentAmount)
+    if (isNaN(amount) || amount <= 0) {
+      toast.warning("Insira um valor válido para o pagamento.")
+      return
+    }
+    const currentTotal = paymentMethods.reduce((sum, method) => sum + method.amount, 0) + amount
+    const { subtotalComDesconto } = calcularSubtotal()
+    if (currentTotal > subtotalComDesconto + 0.01) {
+      toast.warning(
+        `O valor total dos pagamentos (R$${currentTotal.toFixed(2)}) excede o valor da venda (R$${subtotalComDesconto.toFixed(2)}).`,
+      )
+      return
+    }
+    const newPaymentMethod: PaymentMethod = {
+      method: currentPaymentMethod,
+      amount,
+      id: Date.now().toString(),
+    }
+    setPaymentMethods([...paymentMethods, newPaymentMethod])
+    setCurrentPaymentAmount("")
+  }
+
+  const removePaymentMethod = (id: string) => {
+    setPaymentMethods(paymentMethods.filter((method) => method.id !== id))
+  }
+
+  const saveTransaction = () => {
+    if (carrinho.length === 0) {
+      toast.warning("Não há itens no carrinho para salvar.")
+      return
+    }
+    const newTransaction: SavedTransaction = {
+      id: Date.now().toString(),
+      carrinho: [...carrinho],
+      desconto,
+      timestamp: Date.now(),
+      customerName: customerName || "Cliente não identificado",
+    }
+    const updatedTransactions = [...savedTransactions, newTransaction]
+    setSavedTransactions(updatedTransactions)
+    localStorage.setItem("savedTransactions", JSON.stringify(updatedTransactions))
+    toast.success("Venda salva com sucesso!")
+    setShowSaveTransactionModal(false)
+    setCustomerName("")
+    setCarrinho([])
+    setDesconto(0)
+    setPaymentMethods([])
+    setFormaDePagamento("")
+  }
+
+  const restoreTransaction = (transaction: SavedTransaction) => {
+    if (carrinho.length > 0 && !window.confirm("Há itens no carrinho atual. Deseja substituí-los pela venda salva?")) {
+      return
+    }
+    setCarrinho(transaction.carrinho)
+    setDesconto(transaction.desconto)
+    setShowSavedTransactionsModal(false)
+    const updatedTransactions = savedTransactions.filter((t) => t.id !== transaction.id)
+    setSavedTransactions(updatedTransactions)
+    localStorage.setItem("savedTransactions", JSON.stringify(updatedTransactions))
+    toast.success("Venda restaurada com sucesso!")
+  }
+
+  const deleteSavedTransaction = (id: string) => {
+    const updatedTransactions = savedTransactions.filter((t) => t.id !== id)
+    setSavedTransactions(updatedTransactions)
+    localStorage.setItem("savedTransactions", JSON.stringify(updatedTransactions))
+    toast.success("Venda removida com sucesso!")
+  }
+
+  const handleDragEnd = (result: DropResult) => {
+    if (!result.destination) return
+    const items = Array.from(carrinho)
+    const [reorderedItem] = items.splice(result.source.index, 1)
+    items.splice(result.destination.index, 0, reorderedItem)
+    setCarrinho(items)
+  }
 
   return (
     <VendaContainer>
       <SearchSection>
         <Form onSubmit={handleSearchByNameSubmit}>
-        <Label>Buscar por nome ou código de barras // ( F2 )</Label>
+          <Label>Buscar por nome ou código de barras // ( F2 )</Label>
           <SearchContainer>
             <SearchIcon>
               <FiSearch />
@@ -509,17 +631,14 @@ const CriarVenda: React.FC = () => {
               value={searchTermByName}
               onChange={(e) => setSearchTermByName(e.target.value)}
               onKeyDown={(e) => {
-                // Enter key triggers search
                 if (e.key === "Enter") {
                   e.preventDefault()
-                  // If input looks like a barcode (only numbers), use barcode search
                   if (/^\d+$/.test(searchTermByName)) {
                     searchProdutosByCodeBar(searchTermByName)
                   } else {
                     searchProdutosByName(searchTermByName)
                   }
                 }
-                // F2 key focuses the search input
                 if (e.key === "F2") {
                   e.currentTarget.focus()
                 }
@@ -537,8 +656,8 @@ const CriarVenda: React.FC = () => {
               key={produto.id}
               onClick={() => {
                 addToCart(produto)
-                setSearchTermByName("") // Limpar o input após adicionar o produto
-                setProdutos([]) // Limpar os resultados da busca
+                setSearchTermByName("")
+                setProdutos([])
               }}
             >
               <ProductImage src={produto.imageUrl} alt={produto.productName} />
@@ -552,74 +671,109 @@ const CriarVenda: React.FC = () => {
         </ProductGrid>
       </SearchSection>
       <VendaSection>
-        <Label>Checkout</Label>
-        <CartList>
-          {carrinho.length === 0 ? (
-            <EmptyCartMessage>Seu carrinho está vazio.</EmptyCartMessage>
-          ) : (
-            carrinho.map((item) => (
-              <CartItem key={item.id}>
-                <CartItemDetails>
-                  <div style={{ display: "flex", alignItems: "center" }}>
-                    <ProductImage
-                      src={item.imageUrl}
-                      alt={item.productName}
-                      style={{ width: "50px", height: "50px", marginRight: "10px" }}
-                    />
-                    <div>
-                      <CartItemName>{item.productName}</CartItemName>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+          <Label>Checkout</Label>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <Button
+              onClick={() => setShowSaveTransactionModal(true)}
+              style={{ padding: "5px 10px", fontSize: "0.9rem" }}
+            >
+              <FaSave style={{ marginRight: "5px" }} /> Salvar Venda (F6)
+            </Button>
+            <Button
+              onClick={() => setShowSavedTransactionsModal(true)}
+              style={{ padding: "5px 10px", fontSize: "0.9rem" }}
+            >
+              <FaList style={{ marginRight: "5px" }} /> Vendas Salvas (F7)
+            </Button>
+          </div>
+        </div>
 
-                      {item.bulk ? (
-                        <div>
-                          <LabelPeso>Disponivel: {item.estoquePeso}KG</LabelPeso>
-                          <PriceDiv>R${item.productPrice.toFixed(2)}/kg</PriceDiv>
-                          <GranelInput
-                            placeholder="Gramas:"
-                            type="number"
-                            id={`weight_${item.id}`}
-                            value={item.peso || ""}
-                            onChange={(e) => updateWeight(item.id, Number.parseFloat(e.target.value))}
-                          />
-                          <CartItemPrice>
-                            Subtotal:{" "}
-                            {((item.productPrice * (item.peso || 0)) / 1000).toLocaleString("pt-BR", {
-                              style: "currency",
-                              currency: "BRL",
-                            })}
-                          </CartItemPrice>
-                        </div>
-                      ) : (
-                        <div>
-                          <LabelPeso>Disponível: {item.productQuantity}UN</LabelPeso>
-                          <PriceDiv>R$: {item.productPrice.toFixed(2)}</PriceDiv>
-                          <QuantityControl>
-                            <DecrementButton onClick={() => updateQuantity(item.id, (item.quantidade || 0) - 1)}>
-                              <FaMinus />
-                            </DecrementButton>
-                            <QuantityDisplay>{item.quantidade}</QuantityDisplay>
-                            <IncrementButton onClick={() => updateQuantity(item.id, (item.quantidade || 0) + 1)}>
-                              <FaPlus />
-                            </IncrementButton>
-                          </QuantityControl>
-                          <CartItemPrice>
-                            Subtotal:{" "}
-                            {(item.productPrice * (item.quantidade || 0)).toLocaleString("pt-BR", {
-                              style: "currency",
-                              currency: "BRL",
-                            })}
-                          </CartItemPrice>
-                        </div>
+        <DragDropContext onDragEnd={handleDragEnd}>
+          <Droppable droppableId="carrinho">
+            {(provided: DroppableProvided) => (
+              <CartList
+                {...provided.droppableProps}
+                ref={provided.innerRef}
+              >
+                {carrinho.length === 0 ? (
+                  <EmptyCartMessage>Seu carrinho está vazio.</EmptyCartMessage>
+                ) : (
+                  carrinho.map((item, index) => (
+                    <Draggable key={item.id.toString()} draggableId={item.id.toString()} index={index}>
+                      {(provided: DraggableProvided) => (
+                        <CartItem
+                          ref={provided.innerRef}
+                          {...provided.draggableProps}
+                          {...provided.dragHandleProps}
+                        >
+                          <CartItemDetails>
+                            <div style={{ display: "flex", alignItems: "center" }}>
+                              <ProductImage
+                                src={item.imageUrl}
+                                alt={item.productName}
+                                style={{ width: "50px", height: "50px", marginRight: "10px" }}
+                              />
+                              <div>
+                                <CartItemName>{item.productName}</CartItemName>
+                                {item.bulk ? (
+                                  <div>
+                                    <LabelPeso>Disponivel: {item.estoquePeso}KG</LabelPeso>
+                                    <PriceDiv>R${item.productPrice.toFixed(2)}/kg</PriceDiv>
+                                    <GranelInput
+                                      placeholder="Gramas:"
+                                      type="number"
+                                      id={`weight_${item.id}`}
+                                      value={item.peso || ""}
+                                      onChange={(e) => updateWeight(item.id, Number.parseFloat(e.target.value))}
+                                    />
+                                    <CartItemPrice>
+                                      Subtotal:{" "}
+                                      {((item.productPrice * (item.peso || 0)) / 1000).toLocaleString("pt-BR", {
+                                        style: "currency",
+                                        currency: "BRL",
+                                      })}
+                                    </CartItemPrice>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <LabelPeso>Disponível: {item.productQuantity}UN</LabelPeso>
+                                    <PriceDiv>R$: {item.productPrice.toFixed(2)}</PriceDiv>
+                                    <QuantityControl>
+                                      <DecrementButton onClick={() => updateQuantity(item.id, (item.quantidade || 0) - 1)}>
+                                        <FaMinus />
+                                      </DecrementButton>
+                                      <QuantityDisplay>{item.quantidade}</QuantityDisplay>
+                                      <IncrementButton onClick={() => updateQuantity(item.id, (item.quantidade || 0) + 1)}>
+                                        <FaPlus />
+                                      </IncrementButton>
+                                    </QuantityControl>
+                                    <CartItemPrice>
+                                      Subtotal:{" "}
+                                      {(item.productPrice * (item.quantidade || 0)).toLocaleString("pt-BR", {
+                                        style: "currency",
+                                        currency: "BRL",
+                                      })}
+                                    </CartItemPrice>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <CartActions>
+                              <TrashIcon onClick={() => removeFromCart(item.id)} />
+                            </CartActions>
+                          </CartItemDetails>
+                        </CartItem>
                       )}
-                    </div>
-                  </div>
-                  <CartActions>
-                    <TrashIcon onClick={() => removeFromCart(item.id)} />
-                  </CartActions>
-                </CartItemDetails>
-              </CartItem>
-            ))
-          )}
-        </CartList>
+                    </Draggable>
+                  ))
+                )}
+                {provided.placeholder}
+              </CartList>
+            )}
+          </Droppable>
+        </DragDropContext>
+
         {carrinho.length > 0 && (
           <CheckoutSection>
             <Form>
@@ -632,33 +786,71 @@ const CriarVenda: React.FC = () => {
                 onChange={(e) => setDesconto(Number.parseFloat(e.target.value))}
               />
             </Form>
-            <PaymentButtonsContainer>
-              <PaymentButton onClick={() => setFormaDePagamento("Cartão")} selected={formaDePagamento === "Cartão"}>
-                Cartão
-              </PaymentButton>
-              <PaymentButton onClick={() => setFormaDePagamento("Dinheiro")} selected={formaDePagamento === "Dinheiro"}>
-                Dinheiro
-              </PaymentButton>
-              <PaymentButton onClick={() => setFormaDePagamento("PIX")} selected={formaDePagamento === "PIX"}>
-                PIX  ( F8 )
-              </PaymentButton>
-            </PaymentButtonsContainer>
+
+            <div style={{ marginBottom: "10px" }}>
+              <Button
+                onClick={() => setShowSplitPaymentModal(true)}
+                style={{ width: "100%", marginBottom: "10px" }}
+              >
+                Pagamento Dividido
+              </Button>
+            </div>
+
+            {paymentMethods.length === 0 && (
+              <PaymentButtonsContainer>
+                <PaymentButton onClick={() => setFormaDePagamento("Cartão")} selected={formaDePagamento === "Cartão"}>
+                  Cartão
+                </PaymentButton>
+                <PaymentButton onClick={() => setFormaDePagamento("Dinheiro")} selected={formaDePagamento === "Dinheiro"}>
+                  Dinheiro
+                </PaymentButton>
+                <PaymentButton onClick={() => setFormaDePagamento("PIX")} selected={formaDePagamento === "PIX"}>
+                  PIX ( F8 )
+                </PaymentButton>
+              </PaymentButtonsContainer>
+            )}
+
+            {paymentMethods.length > 0 && (
+              <div style={{ marginBottom: "15px", border: "1px solid #ddd", borderRadius: "5px", padding: "10px" }}>
+                <Label style={{ marginBottom: "10px", display: "block" }}>Formas de Pagamento:</Label>
+                {paymentMethods.map(method => (
+                  <div key={method.id} style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
+                    <span>{method.method}</span>
+                    <div>
+                      <span style={{ marginRight: "10px" }}>R$ {method.amount.toFixed(2)}</span>
+                      <button
+                        onClick={() => removePaymentMethod(method.id)}
+                        style={{ background: "none", border: "none", color: "red", cursor: "pointer" }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <div style={{ borderTop: "1px solid #ddd", paddingTop: "5px", display: "flex", justifyContent: "space-between" }}>
+                  <span><strong>Total:</strong></span>
+                  <span>R$ {paymentMethods.reduce((sum, method) => sum + method.amount, 0).toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+
             <SubtotalContainer>
               <SubtotalLabel>Subtotal:</SubtotalLabel>
               <SubtotalAmount>R$ {subtotalComDesconto.toFixed(2)}</SubtotalAmount>
             </SubtotalContainer>
-            <CheckoutButton onClick={() => setShowModal(true)}>Finalizar Venda  ( F4 )</CheckoutButton>
+            <CheckoutButton onClick={() => setShowModal(true)}>Finalizar Venda ( F4 )</CheckoutButton>
           </CheckoutSection>
         )}
       </VendaSection>
+
       <PixModalVenda
         isOpen={showPixModal}
         onClose={() => {
           setShowPixModal(false)
           handleCheckout()
         }}
-        subtotal={calcularSubtotal().subtotalComDesconto}
         onCancel={() => setShowPixModal(false)}
+        subtotal={calcularSubtotal().subtotalComDesconto}
         fullPIX={generatePixCode()}
         now={Date.now()}
       />
@@ -674,9 +866,169 @@ const CriarVenda: React.FC = () => {
           </ModalContent>
         </ModalWrapper>
       )}
+
+      {showSplitPaymentModal && (
+        <ModalWrapper>
+          <ModalContent>
+            <h2>Pagamento Dividido</h2>
+            <p>Valor total: R$ {subtotalComDesconto.toFixed(2)}</p>
+            <p>Valor restante: R$ {(subtotalComDesconto - paymentMethods.reduce((sum, method) => sum + method.amount, 0)).toFixed(2)}</p>
+
+            <div style={{ marginBottom: "15px" }}>
+              <Label htmlFor="paymentMethod">Forma de Pagamento:</Label>
+              <select
+                id="paymentMethod"
+                value={currentPaymentMethod}
+                onChange={(e) => setCurrentPaymentMethod(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "8px",
+                  borderRadius: "4px",
+                  border: "1px solid #ccc",
+                  marginBottom: "10px",
+                }}
+              >
+                <option value="Cartão">Cartão</option>
+                <option value="Dinheiro">Dinheiro</option>
+                <option value="PIX">PIX</option>
+              </select>
+
+              <Label htmlFor="paymentAmount">Valor:</Label>
+              <Input
+                id="paymentAmount"
+                type="number"
+                placeholder="Valor"
+                value={currentPaymentAmount}
+                onChange={(e) => setCurrentPaymentAmount(e.target.value)}
+              />
+
+              <Button
+                onClick={addPaymentMethod}
+                style={{ width: "100%", marginTop: "10px" }}
+              >
+                Adicionar Forma de Pagamento
+              </Button>
+            </div>
+
+            <div>
+              <Button
+                onClick={() => {
+                  if (paymentMethods.length === 0) {
+                    toast.warning("Adicione pelo menos uma forma de pagamento.")
+                    return
+                  }
+                  const totalPayment = paymentMethods.reduce((sum, method) => sum + method.amount, 0)
+                  const difference = Math.abs(totalPayment - subtotalComDesconto)
+                  if (difference > 0.01) {
+                    toast.warning(`O valor total (R$${totalPayment.toFixed(2)}) não corresponde ao valor da venda (R$${subtotalComDesconto.toFixed(2)}).`)
+                    return
+                  }
+                  setShowSplitPaymentModal(false)
+                }}
+              >
+                Confirmar
+              </Button>
+              <CancelButton
+                onClick={() => {
+                  setShowSplitPaymentModal(false)
+                  setPaymentMethods([])
+                }}
+              >
+                Cancelar
+              </CancelButton>
+            </div>
+          </ModalContent>
+        </ModalWrapper>
+      )}
+
+      {showSaveTransactionModal && (
+        <ModalWrapper>
+          <ModalContent>
+            <h2>Salvar Venda</h2>
+            <p>Total: R$ {subtotalComDesconto.toFixed(2)}</p>
+            <p>Itens: {carrinho.length}</p>
+
+            <div style={{ marginBottom: "15px" }}>
+              <Label htmlFor="customerName">Nome do Cliente (opcional):</Label>
+              <Input
+                id="customerName"
+                type="text"
+                placeholder="Nome do cliente"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <Button onClick={saveTransaction}>Salvar</Button>
+              <CancelButton onClick={() => setShowSaveTransactionModal(false)}>Cancelar</CancelButton>
+            </div>
+          </ModalContent>
+        </ModalWrapper>
+      )}
+
+      {showSavedTransactionsModal && (
+        <ModalWrapper>
+          <ModalContent style={{ maxWidth: "600px", maxHeight: "80vh", overflow: "auto" }}>
+            <h2>Vendas Salvas</h2>
+            {savedTransactions.length === 0 ? (
+              <p>Não há vendas salvas.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {savedTransactions.map(transaction => (
+                  <div
+                    key={transaction.id}
+                    style={{
+                      border: "1px solid #ddd",
+                      borderRadius: "5px",
+                      padding: "10px",
+                      backgroundColor: "#f9f9f9",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
+                      <strong>{transaction.customerName}</strong>
+                      <span>{new Date(transaction.timestamp).toLocaleString("pt-BR")}</span>
+                    </div>
+                    <div style={{ marginBottom: "5px" }}>
+                      <span>Itens: {transaction.carrinho.length}</span>
+                      <span style={{ marginLeft: "15px" }}>
+                        Total: R$ {
+                          (transaction.carrinho.reduce((total, item) => {
+                            if (item.bulk) {
+                              return total + (item.productPrice * (item.peso || 0)) / 1000
+                            } else {
+                              return total + item.productPrice * (item.quantidade || 0)
+                            }
+                          }, 0) * (1 - transaction.desconto / 100)).toFixed(2)
+                        }
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: "10px" }}>
+                      <Button
+                        onClick={() => restoreTransaction(transaction)}
+                        style={{ flex: 1 }}
+                      >
+                        Restaurar
+                      </Button>
+                      <CancelButton
+                        onClick={() => deleteSavedTransaction(transaction.id)}
+                        style={{ flex: 1 }}
+                      >
+                        Excluir
+                      </CancelButton>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ marginTop: "15px" }}>
+              <Button onClick={() => setShowSavedTransactionsModal(false)}>Fechar</Button>
+            </div>
+          </ModalContent>
+        </ModalWrapper>
+      )}
     </VendaContainer>
   )
 }
 
 export { CriarVenda }
-
