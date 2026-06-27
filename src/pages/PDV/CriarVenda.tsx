@@ -92,8 +92,9 @@ const CriarVenda: React.FC = () => {
     try {
       if (codeBar.startsWith("20") && codeBar.length === 13) {
         // Handling bulk product (a granel)
-        const productCode = removeLeadingZeros(codeBar.substring(2, 7))
-        const weightInGrams = Number.parseInt(codeBar.substring(7, 12))
+        const productCode = removeLeadingZeros(codeBar.substring(1, 5))
+        const priceInCents = Number.parseInt(codeBar.substring(7, 12))
+        const totalPrice = priceInCents / 100
 
         // Buscar o produto no banco de dados
         const response = await axios.get(
@@ -108,16 +109,23 @@ const CriarVenda: React.FC = () => {
         const produtoEncontrado = response.data[0] // Supondo que a API retorne um array de resultados
 
         if (produtoEncontrado) {
-          // Produto encontrado, com peso
-          const produtoComPeso = {
-            ...produtoEncontrado,
-            peso: weightInGrams, // Peso do produto a granel em gramas
-            bulk: true, // Marcar como produto a granel
+          const productPrice = produtoEncontrado.productPrice || 0
+          if (productPrice > 0) {
+            // Calcular o peso em gramas baseado no preço total da etiqueta e no preço por kg do produto
+            const weightInGrams = Math.round((totalPrice / productPrice) * 1000)
+
+            const produtoComPeso = {
+              ...produtoEncontrado,
+              peso: weightInGrams, // Peso do produto a granel em gramas
+              bulk: true, // Marcar como produto a granel
+            }
+            addToCart(produtoComPeso) // Adicionar ao carrinho
+            setAutoAddFeedback(
+              `Produto "${produtoEncontrado.productName}" (${weightInGrams}g) adicionado automaticamente.`,
+            )
+          } else {
+            setAutoAddFeedback(`Erro: Preço do produto "${produtoEncontrado.productName}" inválido no sistema.`)
           }
-          addToCart(produtoComPeso) // Adicionar ao carrinho
-          setAutoAddFeedback(
-            `Produto "${produtoEncontrado.productName}" (${weightInGrams}g) adicionado automaticamente.`,
-          )
           setSearchTermByName("") // Limpar o input após sucesso
         } else {
           setAutoAddFeedback("Produto a granel não encontrado.")
